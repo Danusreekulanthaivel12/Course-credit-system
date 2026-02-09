@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS courses (
     credits INT NOT NULL,
     dept_id INT,
     semester INT NOT NULL,
-    type ENUM('Regular', 'Elective') DEFAULT 'Regular',
+    type ENUM('Regular', 'Elective', 'Minor', 'Honors') DEFAULT 'Regular',
     FOREIGN KEY (dept_id) REFERENCES departments(id) ON DELETE CASCADE
 );
 
@@ -50,3 +50,13 @@ CREATE TABLE IF NOT EXISTS registrations (
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     UNIQUE KEY unique_registration (student_id, course_id)
 );
+
+-- Semester Limits Table
+CREATE TABLE IF NOT EXISTS semester_limits (
+    semester INT PRIMARY KEY,
+    credit_limit INT DEFAULT 25
+);
+
+-- Seed Semester Limits (1-8)
+INSERT IGNORE INTO semester_limits (semester, credit_limit) VALUES 
+(1, 25), (2, 25), (3, 25), (4, 25), (5, 25), (6, 25), (7, 25), (8, 25);

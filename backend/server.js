@@ -127,15 +127,45 @@ app.get("/courses", (req, res) => {
 
 app.post("/courses", (req, res) => {
   const { course_code, course_name, credits, dept_id, semester, type } = req.body;
+  console.log("POST /courses payload:", req.body);
+
+  // Validation
+  if (!course_code || course_code.length > 20) {
+    return res.status(400).json({ message: "Course code must be 1-20 characters" });
+  }
+  if (!course_name) {
+    return res.status(400).json({ message: "Course name is required" });
+  }
+  const creditsInt = parseInt(credits);
+  if (isNaN(creditsInt) || creditsInt <= 0) {
+    return res.status(400).json({ message: "Credits must be a positive number" });
+  }
+  const semesterInt = parseInt(semester);
+  if (isNaN(semesterInt) || semesterInt <= 0) {
+    return res.status(400).json({ message: "Semester must be a valid number" });
+  }
+  const deptIdInt = parseInt(dept_id);
+  if (isNaN(deptIdInt)) {
+    return res.status(400).json({ message: "Invalid Department" });
+  }
+
+  const sql = "INSERT INTO courses (course_code, course_name, credits, dept_id, semester, type) VALUES (?, ?, ?, ?, ?, ?)";
+  const values = [course_code, course_name, creditsInt, deptIdInt, semesterInt, type || 'Regular'];
+
+  console.log("Executing SQL:", sql, "Values:", values);
+
   db.query(
-    "INSERT INTO courses (course_code, course_name, credits, dept_id, semester, type) VALUES (?, ?, ?, ?, ?, ?)",
-    [course_code, course_name, credits, dept_id, semester, type || 'Regular'],
-    (err) => {
+    sql,
+    values,
+    (err, result) => {
       if (err) {
+        console.error("Insert Error:", err);
         if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ message: "Course code must be unique" });
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') return res.status(400).json({ message: "Invalid Department ID" });
         return res.status(500).json(err);
       }
-      res.json({ message: "Course added" });
+      console.log("Insert Result:", result);
+      res.json({ message: "Course added", id: result.insertId });
     }
   );
 });
@@ -158,17 +188,9 @@ app.put("/courses/:id", (req, res) => {
 
 // Delete Course (with check)
 app.delete("/courses/:id", (req, res) => {
-  // Check if any students are registered
-  db.query("SELECT count(*) as count FROM registrations WHERE course_id = ?", [req.params.id], (err, result) => {
+  db.query("DELETE FROM courses WHERE id = ?", [req.params.id], (err) => {
     if (err) return res.status(500).json(err);
-    if (result[0].count > 0) {
-      return res.status(400).json({ message: "Cannot delete course: Students are registered." });
-    }
-
-    db.query("DELETE FROM courses WHERE id = ?", [req.params.id], (err) => {
-      if (err) return res.status(500).json(err);
-      res.json({ message: "Course deleted successfully" });
-    });
+    res.json({ message: "Course deleted successfully" });
   });
 });
 
@@ -197,6 +219,67 @@ app.post("/students", (req, res) => {
   );
 });
 
+app.put("/students/promote", (req, res) => {
+  console.log("Bulk Update Request:", req.body);
+
+  // Normalize keys (handle camelCase vs snake_case)
+  const currentSemesterVal = req.body.current_semester || req.body.currentSemester;
+  const newSemesterVal = req.body.new_semester || req.body.newSemester;
+  const deptVal = req.body.dept_id !== undefined ? req.body.dept_id : req.body.department;
+
+  // Helper to extract number from string (e.g., "Sem 1" -> 1)
+  const parseSemValue = (val) => {
+    if (val === null || val === undefined || val === "") return NaN;
+    const str = String(val);
+    const match = str.match(/\d+/);
+    return match ? parseInt(match[0]) : NaN;
+  };
+
+  const currentSem = parseSemValue(currentSemesterVal);
+  const newSem = parseSemValue(newSemesterVal);
+
+  // Handle Department
+  let deptId = null;
+  if (deptVal && deptVal !== "All Departments" && deptVal !== "") {
+    deptId = parseInt(deptVal);
+    if (isNaN(deptId)) deptId = null; // Fallback if parse fails
+  }
+
+  if (isNaN(newSem) || isNaN(currentSem)) {
+    return res.status(400).json({ message: "Invalid semester values. Received: " + JSON.stringify(req.body) });
+  }
+
+  if (newSem <= currentSem) {
+    return res.status(400).json({ message: "New semester must be greater than current semester" });
+  }
+
+  console.log(`Processing Update: Sem ${currentSem} -> ${newSem}, Dept: ${deptId} `);
+
+  let sql = "UPDATE students SET semester = ? WHERE semester = ?";
+  const params = [newSem, currentSem];
+
+  if (deptId !== null) {
+    sql += " AND dept_id = ?";
+    params.push(deptId);
+  }
+
+  console.log("Executing SQL:", sql, "Params:", params);
+
+  db.query(sql, params, (err, result) => {
+    if (err) {
+      console.error("Bulk Update SQL Error:", err);
+      return res.status(500).json({ message: "Database update failed", error: err });
+    }
+    console.log("Bulk Update Result:", result);
+
+    if (result.affectedRows === 0) {
+      return res.json({ message: "No students matches the criteria for update.", updatedCount: 0 });
+    }
+
+    res.json({ message: "Students updated successfully", updatedCount: result.affectedRows });
+  });
+});
+
 app.delete("/students/:id", (req, res) => {
   db.query("DELETE FROM students WHERE id=?", [req.params.id], (err) => {
     if (err) return res.status(500).json(err);
@@ -205,89 +288,13 @@ app.delete("/students/:id", (req, res) => {
 });
 
 // --- Registration Stats ---
-app.get("/registrations/stats", (req, res) => {
-  const stats = {};
-  const q1 = "SELECT d.name, COUNT(r.id) as count FROM registrations r JOIN students s ON r.student_id = s.id JOIN departments d ON s.dept_id = d.id GROUP BY d.id";
-  const q2 = "SELECT s.semester, COUNT(r.id) as count FROM registrations r JOIN students s ON r.student_id = s.id GROUP BY s.semester";
 
-  db.query(q1, (err, deptStats) => {
-    if (err) return res.status(500).json(err);
-    stats.department = deptStats;
-
-    db.query(q2, (err, semStats) => {
-      if (err) return res.status(500).json(err);
-      stats.semester = semStats;
-      res.json(stats);
-    });
-  });
-});
 
 
 /* ================= STUDENT MODULE ================= */
 
 // Get Student's Registered Courses
-app.get("/registrations/:student_id", (req, res) => {
-  db.query(
-    `SELECT c.* FROM registrations r 
-         JOIN courses c ON r.course_id = c.id 
-         WHERE r.student_id = ?`,
-    [req.params.student_id],
-    (err, result) => {
-      if (err) return res.status(500).json(err);
-      res.json(result);
-    }
-  );
-});
 
-// Register Course
-app.post("/registrations", (req, res) => {
-  const { student_id, course_id } = req.body;
-  const CREDIT_LIMIT = 25;
-
-  // 1. Check if already registered
-  db.query("SELECT * FROM registrations WHERE student_id = ? AND course_id = ?", [student_id, course_id], (err, exists) => {
-    if (err) return res.status(500).json(err);
-    if (exists.length > 0) return res.status(400).json({ message: "Already registered" });
-
-    // 2. Get current total credits
-    db.query(
-      `SELECT SUM(c.credits) as total_credits FROM registrations r 
-             JOIN courses c ON r.course_id = c.id 
-             WHERE r.student_id = ?`,
-      [student_id],
-      (err, result) => {
-        if (err) return res.status(500).json(err);
-
-        const currentCredits = result[0].total_credits || 0;
-
-        // 3. Get new course credits & Dynamic Limit
-        db.query("SELECT credits, semester FROM courses WHERE id = ?", [course_id], (err, courseRes) => {
-          if (err) return res.status(500).json(err);
-          if (courseRes.length === 0) return res.status(404).json({ message: "Course not found" });
-
-          const newCredits = courseRes[0].credits;
-          const courseSem = courseRes[0].semester;
-
-          // Fetch limit for this semester
-          db.query("SELECT credit_limit FROM semester_limits WHERE semester = ?", [courseSem], (err, limitRes) => {
-            if (err) return res.status(500).json(err);
-            const limit = limitRes.length > 0 ? limitRes[0].credit_limit : 25; // Default 25
-
-            if (currentCredits + newCredits > limit) {
-              return res.status(400).json({ message: `Credit limit exceeded (Max ${limit})` });
-            }
-
-            // 4. Register
-            db.query("INSERT INTO registrations (student_id, course_id) VALUES (?, ?)", [student_id, course_id], (err) => {
-              if (err) return res.status(500).json(err);
-              res.json({ message: "Registration successful" });
-            });
-          });
-        });
-      }
-    );
-  });
-});
 
 app.listen(5000, () => {
   console.log("Server running on http://localhost:5000");

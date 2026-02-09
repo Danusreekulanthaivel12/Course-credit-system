@@ -3,7 +3,7 @@ const mysql = require("mysql2");
 const db = mysql.createConnection({
     host: "localhost",
     user: "root",
-    password: "", // Default XAMPP password
+    password: "DanuK@05", // Default XAMPP password
     database: "course_credit_system",
     multipleStatements: true
 });
