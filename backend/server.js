@@ -293,8 +293,82 @@ app.delete("/students/:id", (req, res) => {
 
 /* ================= STUDENT MODULE ================= */
 
-// Get Student's Registered Courses
+// --- Registrations ---
 
+app.get("/registrations/:student_id", (req, res) => {
+  db.query(
+    "SELECT r.id, c.id as course_id, c.course_code, c.course_name, c.credits, c.type FROM registrations r JOIN courses c ON r.course_id = c.id WHERE r.student_id = ?",
+    [req.params.student_id],
+    (err, result) => {
+      if (err) return res.status(500).json(err);
+      res.json(result);
+    }
+  );
+});
+
+app.post("/registrations", async (req, res) => {
+  const { student_id, course_id } = req.body;
+  console.log("Registration Request:", { student_id, course_id });
+
+  if (!student_id || !course_id) {
+    return res.status(400).json({ message: "Missing student_id or course_id" });
+  }
+
+  try {
+    // 1. Fetch Course Details
+    const [courses] = await db.promise().query("SELECT * FROM courses WHERE id = ?", [course_id]);
+    if (courses.length === 0) return res.status(404).json({ message: "Course not found" });
+    const course = courses[0];
+
+    // 2. Fetch Student Details
+    const [students] = await db.promise().query("SELECT * FROM students WHERE id = ?", [student_id]);
+    if (students.length === 0) return res.status(404).json({ message: "Student not found" });
+    const student = students[0];
+
+    // 3. Duplicate Check
+    const [existing] = await db.promise().query("SELECT * FROM registrations WHERE student_id = ? AND course_id = ?", [student_id, course_id]);
+    if (existing.length > 0) return res.status(409).json({ message: "Already registered for this course" });
+
+    // 4. Logic based on Course Type
+    if (course.type === 'Elective') {
+      // Fetch Semester Limit
+      const [limits] = await db.promise().query("SELECT credit_limit FROM semester_limits WHERE semester = ?", [student.semester]);
+      const creditLimit = limits.length > 0 ? limits[0].credit_limit : 25;
+
+      // Fetch Regular Courses Credits
+      const [regulars] = await db.promise().query("SELECT SUM(credits) as total FROM courses WHERE dept_id = ? AND semester = ? AND type = 'Regular'", [student.dept_id, student.semester]);
+      const regularCredits = regulars[0].total || 0;
+
+      // Fetch Registered Elective Credits
+      const [registeredElectives] = await db.promise().query(`
+            SELECT SUM(c.credits) as total 
+            FROM registrations r 
+            JOIN courses c ON r.course_id = c.id 
+            WHERE r.student_id = ? AND c.type = 'Elective'`, [student_id]);
+      const registeredElectiveCredits = registeredElectives[0].total || 0;
+
+      const totalCredits = regularCredits + registeredElectiveCredits + course.credits;
+
+      if (totalCredits > creditLimit) {
+        return res.status(400).json({
+          message: `Credit limit exceeded. Limit: ${creditLimit}, Current (Reg+Elec): ${regularCredits + registeredElectiveCredits}, New: ${course.credits}`
+        });
+      }
+    }
+    // Minor/Honor checks can be added here (e.g. mutual exclusion), but user asked to skip credit check for them.
+    // Mutual exclusion is currently enforced on frontend, but could be added here for safety.
+
+    // 5. Insert Registration
+    const [result] = await db.promise().query("INSERT INTO registrations (student_id, course_id) VALUES (?, ?)", [student_id, course_id]);
+
+    console.log("Registration Successful:", result.insertId);
+    res.status(201).json({ message: "Registration successful", id: result.insertId });
+
+  } catch (err) {
+    console.error("Registration Logic Error:", err);
+    res.status(500).json({ message: "Internal server error during registration", error: err.message });
+  }
+});
 
 app.listen(5000, () => {
   console.log("Server running on http://localhost:5000");
