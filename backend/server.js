@@ -288,8 +288,30 @@ app.delete("/students/:id", (req, res) => {
 });
 
 // --- Registration Stats ---
+app.get("/registrations/stats", async (req, res) => {
+  try {
+    const [deptStats] = await db.promise().query(`
+      SELECT d.name, COUNT(r.id) as count 
+      FROM registrations r 
+      JOIN students s ON r.student_id = s.id 
+      JOIN departments d ON s.dept_id = d.id 
+      GROUP BY d.name
+    `);
 
+    const [semStats] = await db.promise().query(`
+      SELECT s.semester, COUNT(r.id) as count 
+      FROM registrations r 
+      JOIN students s ON r.student_id = s.id 
+      GROUP BY s.semester 
+      ORDER BY s.semester
+    `);
 
+    res.json({ department: deptStats, semester: semStats });
+  } catch (err) {
+    console.error("Stats Error:", err);
+    res.status(500).json({ message: "Error fetching stats", error: err.message });
+  }
+});
 
 /* ================= STUDENT MODULE ================= */
 
