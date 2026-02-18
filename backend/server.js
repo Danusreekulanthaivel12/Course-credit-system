@@ -313,6 +313,27 @@ app.get("/registrations/stats", async (req, res) => {
   }
 });
 
+// --- Course Requests (Add-On / Exception) ---
+app.get("/requests/:student_id", (req, res) => {
+  db.query("SELECT * FROM course_requests WHERE student_id = ? ORDER BY created_at DESC", [req.params.student_id], (err, result) => {
+    if (err) return res.status(500).json(err);
+    res.json(result);
+  });
+});
+
+app.post("/requests", (req, res) => {
+  const { student_id, course_name, request_type, details } = req.body;
+  if (!student_id || !course_name || !request_type) {
+    return res.status(400).json({ message: "Missing required fields" });
+  }
+
+  const sql = "INSERT INTO course_requests (student_id, course_name, request_type, details, status) VALUES (?, ?, ?, ?, 'pending')";
+  db.query(sql, [student_id, course_name, request_type, JSON.stringify(details || {})], (err, result) => {
+    if (err) return res.status(500).json(err);
+    res.json({ message: "Request submitted successfully", id: result.insertId });
+  });
+});
+
 /* ================= STUDENT MODULE ================= */
 
 // --- Registrations ---
@@ -357,9 +378,8 @@ app.post("/registrations", async (req, res) => {
       const [limits] = await db.promise().query("SELECT credit_limit FROM semester_limits WHERE semester = ?", [student.semester]);
       const creditLimit = limits.length > 0 ? limits[0].credit_limit : 25;
 
-      // Fetch Regular Courses Credits
-      const [regulars] = await db.promise().query("SELECT SUM(credits) as total FROM courses WHERE dept_id = ? AND semester = ? AND type = 'Regular'", [student.dept_id, student.semester]);
-      const regularCredits = regulars[0].total || 0;
+      // Note: User requested to EXCLUDE Regular credits from this check.
+      // So we only check if (Registered Electives + New Elective) > Limit.
 
       // Fetch Registered Elective Credits
       const [registeredElectives] = await db.promise().query(`
@@ -369,11 +389,11 @@ app.post("/registrations", async (req, res) => {
             WHERE r.student_id = ? AND c.type = 'Elective'`, [student_id]);
       const registeredElectiveCredits = registeredElectives[0].total || 0;
 
-      const totalCredits = regularCredits + registeredElectiveCredits + course.credits;
+      const totalCredits = registeredElectiveCredits + course.credits;
 
       if (totalCredits > creditLimit) {
         return res.status(400).json({
-          message: `Credit limit exceeded. Limit: ${creditLimit}, Current (Reg+Elec): ${regularCredits + registeredElectiveCredits}, New: ${course.credits}`
+          message: `Credit limit exceeded. Limit: ${creditLimit}, Current (Electives): ${registeredElectiveCredits}, New: ${course.credits}`
         });
       }
     }
